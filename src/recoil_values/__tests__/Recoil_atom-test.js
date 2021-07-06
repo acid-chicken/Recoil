@@ -35,7 +35,7 @@ const testRecoil = getRecoilTestFn(() => {
 
   React = require('react');
   ({useState, Profiler} = require('react'));
-  ReactDOM = require('ReactDOM');
+  ReactDOM = require('ReactDOMLegacy_DEPRECATED');
   ({act} = require('ReactTestUtils'));
 
   ({DEFAULT_VALUE, DefaultValue} = require('../../core/Recoil_Node'));
@@ -258,9 +258,8 @@ describe('Effects', () => {
         ({setSelf, onSet}) => {
           inited = true;
           setSelf('INIT');
-          // This only fires on the reset action, not the default promise resolving
           onSet(newValue => {
-            expect(newValue).toBeInstanceOf(DefaultValue);
+            expect(newValue).toBe('RESOLVE');
           });
         },
       ],
@@ -408,6 +407,7 @@ describe('Effects', () => {
   testRecoil('set promise', async () => {
     let resolveAtom;
     let validated;
+    const onSetForSameEffect = jest.fn(() => {});
     const myAtom = atom({
       key: 'atom effect init set promise',
       default: 'DEFAULT',
@@ -418,6 +418,9 @@ describe('Effects', () => {
               resolveAtom = resolve;
             }),
           );
+          onSet(onSetForSameEffect);
+        },
+        ({onSet}) => {
           onSet(value => {
             expect(value).toEqual('RESOLVE');
             validated = true;
@@ -434,7 +437,83 @@ describe('Effects', () => {
     act(() => undefined);
     expect(c.textContent).toEqual('"RESOLVE"');
     expect(validated).toEqual(true);
+
+    // onSet() should not be called for this hook's setSelf()
+    expect(onSetForSameEffect).toHaveBeenCalledTimes(0);
   });
+
+  testRecoil('set default promise', async () => {
+    let setValue = 'RESOLVE_DEFAULT';
+    const onSetHandler = jest.fn(newValue => {
+      expect(newValue).toBe(setValue);
+    });
+
+    let resolveDefault;
+    const myAtom = atom({
+      key: 'atom effect default promise',
+      default: new Promise(resolve => {
+        resolveDefault = resolve;
+      }),
+      effects_UNSTABLE: [
+        ({onSet}) => {
+          onSet(onSetHandler);
+        },
+      ],
+    });
+
+    const [ReadsWritesAtom, set, reset] = componentThatReadsAndWritesAtom(
+      myAtom,
+    );
+    const c = renderElements(<ReadsWritesAtom />);
+    expect(c.textContent).toEqual('loading');
+
+    act(() => resolveDefault?.('RESOLVE_DEFAULT'));
+    await flushPromisesAndTimers();
+    expect(c.textContent).toEqual('"RESOLVE_DEFAULT"');
+    expect(onSetHandler).toHaveBeenCalledTimes(1);
+
+    setValue = 'SET';
+    act(() => set('SET'));
+    expect(c.textContent).toEqual('"SET"');
+    expect(onSetHandler).toHaveBeenCalledTimes(2);
+
+    setValue = 'RESOLVE_DEFAULT';
+    act(reset);
+    expect(c.textContent).toEqual('"RESOLVE_DEFAULT"');
+    expect(onSetHandler).toHaveBeenCalledTimes(3);
+  });
+
+  testRecoil(
+    'when setSelf is called in onSet, then onSet is not triggered again',
+    () => {
+      let set1 = false;
+      const valueToSet1 = 'value#1';
+      const transformedBySetSelf = 'transformed after value#1';
+
+      const myAtom = atom({
+        key: 'atom setSelf with set-updater',
+        default: 'DEFAULT',
+        effects_UNSTABLE: [
+          ({setSelf, onSet}) => {
+            onSet(newValue => {
+              expect(set1).toBe(false);
+              if (newValue === valueToSet1) {
+                setSelf(transformedBySetSelf);
+                set1 = true;
+              }
+            });
+          },
+        ],
+      });
+
+      const [ReadsWritesAtom, set] = componentThatReadsAndWritesAtom(myAtom);
+
+      const c = renderElements(<ReadsWritesAtom />);
+      expect(c.textContent).toEqual('"DEFAULT"');
+      act(() => set(valueToSet1));
+      expect(c.textContent).toEqual(`"${transformedBySetSelf}"`);
+    },
+  );
 
   // NOTE: This test throws an expected error
   testRecoil('reject promise', async () => {
@@ -517,7 +596,7 @@ describe('Effects', () => {
             }),
           );
           onSet(value => {
-            expect(value).toBeInstanceOf(DefaultValue);
+            expect(value).toBe('DEFAULT');
             validated = true;
           });
         },

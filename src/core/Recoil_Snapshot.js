@@ -4,7 +4,7 @@
  * This source code is licensed under the MIT license found in the
  * LICENSE file in the root directory of this source tree.
  *
- * @emails oncall+obviz
+ * @emails oncall+recoil
  * @flow strict-local
  * @format
  */
@@ -15,7 +15,7 @@ import type {
   ResetRecoilState,
   SetRecoilState,
   ValueOrUpdater,
-} from '../recoil_values/Recoil_selector';
+} from '../recoil_values/Recoil_callbackTypes';
 import type {RecoilValueInfo} from './Recoil_FunctionalCore';
 import type {NodeKey} from './Recoil_Keys';
 import type {RecoilState, RecoilValue} from './Recoil_RecoilValue';
@@ -44,6 +44,7 @@ const {
   setRecoilValue,
   setUnvalidatedRecoilValue,
 } = require('./Recoil_RecoilValueInterface');
+const {updateRetainCount} = require('./Recoil_Retention');
 const {
   getNextTreeStateVersion,
   makeEmptyStoreState,
@@ -51,6 +52,19 @@ const {
 
 // Opaque at this surface because it's part of the public API from here.
 export opaque type SnapshotID = StateID;
+
+const retainWarning = `
+Recoil Snapshots only last for the duration of the callback they are provided to. To keep a Snapshot longer, do this:
+
+  const release = snapshot.retain();
+  try {
+    await useTheSnapshotAsynchronously(snapshot);
+  } finally {
+    release();
+  }
+
+This is currently a DEV-only warning but will become a thrown exception in the next release of Recoil.
+`;
 
 // A "Snapshot" is "read-only" and captures a specific set of values of atoms.
 // However, the data-flow-graph and selector values may evolve as selector
@@ -88,9 +102,10 @@ class Snapshot {
         nodeKey,
         'get',
       );
+      updateRetainCount(this._store, nodeKey, 1);
     }
     this.retain();
-    this.autorelease();
+    this.autorelease_INTERNAL();
   }
 
   retain(): () => void {
@@ -102,21 +117,21 @@ class Snapshot {
     return () => {
       if (!released) {
         released = true;
-        this.release();
+        this.release_INTERNAL();
       }
     };
   }
 
-  autorelease(): void {
+  autorelease_INTERNAL(): void {
     if (!gkx('recoil_memory_managament_2020')) {
       return;
     }
     if (!isSSR) {
-      window.setTimeout(() => this.release(), 0);
+      window.setTimeout(() => this.release_INTERNAL(), 0);
     }
   }
 
-  release(): void {
+  release_INTERNAL(): void {
     if (!gkx('recoil_memory_managament_2020')) {
       return;
     }
@@ -124,25 +139,19 @@ class Snapshot {
     if (this._refCount === 0) {
       // Temporarily nerfing this to allow us to find broken call sites without
       // actually breaking anybody yet.
-      // for (const fn of this._store.getState().nodeCleanupFunctions.values()) {
-      //   fn();
+      // for (const k of this._store.getState().nodeCleanupFunctions.keys()) {
+      //   updateRetainCountToZero(this._store, k);
       // }
-      // this._store.getState().nodeCleanupFunctions.clear();
     }
   }
 
   checkRefCount_INTERNAL(): void {
     if (gkx('recoil_memory_managament_2020') && this._refCount <= 0) {
       if (__DEV__) {
-        recoverableViolation(
-          'Recoil Snapshots only last for the duration of the callback they are provided to. To keep a Snapshot longer, call its retain() method (and then call release() when you are done with it). This is currently a DEV-only warning but will become a real error soon. Please reach out to Dave McCabe for help fixing this. To temporarily suppress this warning add gk_disable=recoil_memory_managament_2020 to the URL.',
-          'recoil',
-        );
+        recoverableViolation(retainWarning, 'recoil');
       }
       // What we will ship later:
-      // throw new Error(
-      // 'Recoil Snapshots only last for the duration of the callback they are provided to. To keep a Snapshot longer, call its retain() method (and then call release() when you are done with it).',
-      // );
+      // throw new Error(retainWarning);
     }
   }
 
@@ -228,8 +237,18 @@ class Snapshot {
   // eslint-disable-next-line fb-www/extra-arrow-initializer
   map: ((MutableSnapshot) => void) => Snapshot = mapper => {
     this.checkRefCount_INTERNAL();
-    const mutableSnapshot = new MutableSnapshot(this);
+    const mutableSnapshot = new MutableSnapshot(this, batchUpdates);
     mapper(mutableSnapshot); // if removing batchUpdates from `set` add it here
+    return cloneSnapshot(mutableSnapshot.getStore_INTERNAL());
+  };
+
+  // eslint-disable-next-line fb-www/extra-arrow-initializer
+  mapBatched_UNSTABLE: ((MutableSnapshot) => void) => Snapshot = mapper => {
+    this.checkRefCount_INTERNAL();
+    const mutableSnapshot = new MutableSnapshot(this, cb => cb());
+    batchUpdates(() => {
+      mapper(mutableSnapshot);
+    });
     return cloneSnapshot(mutableSnapshot.getStore_INTERNAL());
   };
 
@@ -238,7 +257,7 @@ class Snapshot {
     (MutableSnapshot) => Promise<void>,
   ) => Promise<Snapshot> = async mapper => {
     this.checkRefCount_INTERNAL();
-    const mutableSnapshot = new MutableSnapshot(this);
+    const mutableSnapshot = new MutableSnapshot(this, batchUpdates);
     await mapper(mutableSnapshot);
     return cloneSnapshot(mutableSnapshot.getStore_INTERNAL());
   };
@@ -264,6 +283,7 @@ function cloneStoreState(
           nonvalidatedAtoms: treeState.nonvalidatedAtoms.clone(),
         }
       : treeState,
+    commitDepth: 0,
     nextTree: null,
     previousTree: null,
     knownAtoms: new Set(storeState.knownAtoms), // FIXME here's a copy
@@ -304,7 +324,9 @@ function cloneSnapshot(
 }
 
 class MutableSnapshot extends Snapshot {
-  constructor(snapshot: Snapshot) {
+  _batch: (() => void) => void;
+
+  constructor(snapshot: Snapshot, batch: (() => void) => void) {
     super(
       cloneStoreState(
         snapshot.getStore_INTERNAL(),
@@ -312,6 +334,7 @@ class MutableSnapshot extends Snapshot {
         true,
       ),
     );
+    this._batch = batch;
   }
 
   // We want to allow the methods to be destructured and used as accessors
@@ -321,11 +344,13 @@ class MutableSnapshot extends Snapshot {
     newValueOrUpdater: ValueOrUpdater<T>,
   ) => {
     this.checkRefCount_INTERNAL();
+    const store = this.getStore_INTERNAL();
     // This batchUpdates ensures this `set` is applied immediately and you can
     // read the written value after calling `set`. I would like to remove this
     // behavior and only batch in `Snapshot.map`, but this would be a breaking
     // change potentially.
-    batchUpdates(() => {
+    this._batch(() => {
+      updateRetainCount(store, recoilState.key, 1);
       setRecoilValue(this.getStore_INTERNAL(), recoilState, newValueOrUpdater);
     });
   };
@@ -334,10 +359,13 @@ class MutableSnapshot extends Snapshot {
   // eslint-disable-next-line fb-www/extra-arrow-initializer
   reset: ResetRecoilState = <T>(recoilState: RecoilState<T>) => {
     this.checkRefCount_INTERNAL();
+    const store = this.getStore_INTERNAL();
     // See note at `set` about batched updates.
-    batchUpdates(() =>
-      setRecoilValue(this.getStore_INTERNAL(), recoilState, DEFAULT_VALUE),
-    );
+    this._batch(() => {
+      updateRetainCount(store, recoilState.key, 1);
+
+      setRecoilValue(this.getStore_INTERNAL(), recoilState, DEFAULT_VALUE);
+    });
   };
 
   // We want to allow the methods to be destructured and used as accessors
@@ -347,8 +375,10 @@ class MutableSnapshot extends Snapshot {
   ) => {
     this.checkRefCount_INTERNAL();
     const store = this.getStore_INTERNAL();
+    // See note at `set` about batched updates.
     batchUpdates(() => {
       for (const [k, v] of values.entries()) {
+        updateRetainCount(store, k, 1);
         setUnvalidatedRecoilValue(store, new AbstractRecoilValue(k), v);
       }
     });

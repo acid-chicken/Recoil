@@ -20,73 +20,9 @@ export class DefaultValue {
 export type RecoilRootProps = {
   initializeState?: (mutableSnapshot: MutableSnapshot) => void,
   override?: true,
-} | {override: false}
+} | {override: false};
 
 export const RecoilRoot: React.FC<RecoilRootProps>;
-
-// Effect is called the first time a node is used with a <RecoilRoot>
-export type AtomEffect<T> = (param: {
-  node: RecoilState<T>,
-  trigger: 'set' | 'get',
-
-  // Call synchronously to initialize value or async to change it later
-  setSelf: (param:
-    | T
-    | DefaultValue
-    | Promise<T | DefaultValue>
-    | ((param: T | DefaultValue) => T | DefaultValue),
-  ) => void,
-  resetSelf: () => void,
-
-  // Subscribe callbacks to events.
-  // Atom effect observers are called before global transaction observers
-  onSet: (
-    param: (newValue: T | DefaultValue, oldValue: T | DefaultValue) => void,
-  ) => void,
-}) => void | (() => void);
-
-// atom.d.ts
-export interface AtomOptions<T> {
-  key: NodeKey;
-  default: RecoilValue<T> | Promise<T> | T;
-  effects_UNSTABLE?: ReadonlyArray<AtomEffect<T>>;
-  dangerouslyAllowMutability?: boolean;
-}
-
-/**
- * Creates an atom, which represents a piece of writeable state
- */
-export function atom<T>(options: AtomOptions<T>): RecoilState<T>;
-
-// selector.d.ts
-export type GetRecoilValue = <T>(recoilVal: RecoilValue<T>) => T;
-
-export type SetRecoilState = <T>(
-    recoilVal: RecoilState<T>,
-    newVal: T | DefaultValue | ((prevValue: T) => T | DefaultValue),
-) => void;
-
-export type ResetRecoilState = (recoilVal: RecoilState<any>) => void; // eslint-disable-line @typescript-eslint/no-explicit-any
-
-export interface ReadOnlySelectorOptions<T> {
-    key: string;
-    get: (opts: { get: GetRecoilValue }) => Promise<T> | RecoilValue<T> | T;
-    dangerouslyAllowMutability?: boolean;
-}
-
-export interface ReadWriteSelectorOptions<T> extends ReadOnlySelectorOptions<T> {
-  set: (
-    opts: {
-      set: SetRecoilState;
-      get: GetRecoilValue;
-      reset: ResetRecoilState;
-    },
-    newValue: T | DefaultValue,
-  ) => void;
-}
-
-export function selector<T>(options: ReadWriteSelectorOptions<T>): RecoilState<T>;
-export function selector<T>(options: ReadOnlySelectorOptions<T>): RecoilValueReadOnly<T>;
 
 // Snapshot.d.ts
 declare const SnapshotID_OPAQUE: unique symbol;
@@ -119,6 +55,7 @@ export class Snapshot {
   getInfo_UNSTABLE<T>(recoilValue: RecoilValue<T>): AtomInfo<T>;
   map(cb: (mutableSnapshot: MutableSnapshot) => void): Snapshot;
   asyncMap(cb: (mutableSnapshot: MutableSnapshot) => Promise<void>): Promise<Snapshot>;
+  retain(): () => void;
 }
 
 export class MutableSnapshot extends Snapshot {
@@ -126,14 +63,109 @@ export class MutableSnapshot extends Snapshot {
   reset: ResetRecoilState;
 }
 
+// Effect is called the first time a node is used with a <RecoilRoot>
+export type AtomEffect<T> = (param: {
+  node: RecoilState<T>,
+  trigger: 'set' | 'get',
+
+  // Call synchronously to initialize value or async to change it later
+  setSelf: (param:
+    | T
+    | DefaultValue
+    | Promise<T | DefaultValue>
+    | ((param: T | DefaultValue) => T | DefaultValue),
+  ) => void,
+  resetSelf: () => void,
+
+  // Subscribe callbacks to events.
+  // Atom effect observers are called before global transaction observers
+  onSet: (
+    param: (newValue: T, oldValue: T | DefaultValue) => void,
+  ) => void,
+}) => void | (() => void);
+
+// atom.d.ts
+export interface AtomOptions<T> {
+  key: NodeKey;
+  default: RecoilValue<T> | Promise<T> | T;
+  effects_UNSTABLE?: ReadonlyArray<AtomEffect<T>>;
+  dangerouslyAllowMutability?: boolean;
+}
+
+/**
+ * Creates an atom, which represents a piece of writeable state
+ */
+export function atom<T>(options: AtomOptions<T>): RecoilState<T>;
+
+// selector.d.ts
+export type GetRecoilValue = <T>(recoilVal: RecoilValue<T>) => T;
+export type GetCallback = <Args extends ReadonlyArray<unknown>, Return>(
+  fn: (interface: Readonly<{snapshot: Snapshot}>) => (...args: Args) => Return,
+) => (...args: Args) => Return;
+
+export type SetRecoilState = <T>(
+    recoilVal: RecoilState<T>,
+    newVal: T | DefaultValue | ((prevValue: T) => T | DefaultValue),
+) => void;
+
+export type ResetRecoilState = (recoilVal: RecoilState<any>) => void; // eslint-disable-line @typescript-eslint/no-explicit-any
+
+
+// export type EqualityPolicy = 'reference' | 'value'; TODO: removing while we discuss long term API
+
+export type EvictionPolicy = 'lru' | 'none';
+
+// TODO: removing while we discuss long term API
+// export type CachePolicy =
+//   | {eviction: 'lru', maxSize: number, equality?: EqualityPolicy}
+//   | {eviction: 'none', equality?: EqualityPolicy}
+//   | {eviction?: undefined, equality: EqualityPolicy};
+
+// TODO: removing while we discuss long term API
+// export interface CachePolicyWithoutEviction {
+//   equality: EqualityPolicy;
+// }
+
+export type CachePolicyWithoutEquality = {eviction: 'lru', maxSize: number} | {eviction: 'none'};
+
+export interface ReadOnlySelectorOptions<T> {
+    key: string;
+    get: (opts: {
+      get: GetRecoilValue,
+      getCallback: GetCallback,
+    }) => Promise<T> | RecoilValue<T> | T;
+    dangerouslyAllowMutability?: boolean;
+    cachePolicy_UNSTABLE?: CachePolicyWithoutEquality; // TODO: using the more restrictive CachePolicyWithoutEquality while we discuss long term API
+}
+
+export interface ReadWriteSelectorOptions<T> extends ReadOnlySelectorOptions<T> {
+  set: (
+    opts: {
+      set: SetRecoilState;
+      get: GetRecoilValue;
+      reset: ResetRecoilState;
+    },
+    newValue: T | DefaultValue,
+  ) => void;
+}
+
+export function selector<T>(options: ReadWriteSelectorOptions<T>): RecoilState<T>;
+export function selector<T>(options: ReadOnlySelectorOptions<T>): RecoilValueReadOnly<T>;
+
 // hooks.d.ts
 export type SetterOrUpdater<T> = (valOrUpdater: ((currVal: T) => T) | T) => void;
 export type Resetter = () => void;
+export interface TransactionInterface_UNSTABLE {
+  get<T>(a: RecoilValue<T>): T;
+  set<T>(s: RecoilState<T>, u: ((currVal: T) => T) | T): void;
+  reset(s: RecoilState<any>): void;
+}
 export type CallbackInterface = Readonly<{
   set: <T>(recoilVal: RecoilState<T>, valOrUpdater: ((currVal: T) => T) | T) => void;
   reset: (recoilVal: RecoilState<any>) => void; // eslint-disable-line @typescript-eslint/no-explicit-any
   snapshot: Snapshot,
   gotoSnapshot: (snapshot: Snapshot) => void,
+  transact_UNSTABLE: (cb: (i: TransactionInterface_UNSTABLE) => void) => void;
 }>;
 
 /**
@@ -190,6 +222,11 @@ export function useRecoilCallback<Args extends ReadonlyArray<unknown>, Return>(
   deps?: ReadonlyArray<unknown>,
 ): (...args: Args) => Return;
 
+export function useRecoilTransaction_UNSTABLE<Args extends ReadonlyArray<unknown>>(
+  fn: (interface: TransactionInterface_UNSTABLE) => (...args: Args) => void,
+  deps?: ReadonlyArray<unknown>,
+): (...args: Args) => void;
+
 export function useRecoilTransactionObserver_UNSTABLE(
   callback: (opts: {
     snapshot: Snapshot,
@@ -234,16 +271,16 @@ interface LoadingLoadable<T> extends BaseLoadable<T> {
   state: 'loading';
   contents: LoadablePromise<T>;
   valueMaybe: () => undefined;
-  errorMaybe: () => any;
-  promiseMaybe: () => undefined;
+  errorMaybe: () => undefined;
+  promiseMaybe: () => Promise<T>;
 }
 
 interface ErrorLoadable<T> extends BaseLoadable<T> {
   state: 'hasError';
-  contents: Error;
+  contents: any;
   valueMaybe: () => undefined;
-  errorMaybe: () => undefined;
-  promiseMaybe: () => Promise<T>;
+  errorMaybe: () => any;
+  promiseMaybe: () => undefined;
 }
 
 export type Loadable<T> =
@@ -289,6 +326,7 @@ export interface AtomFamilyOptions<T, P extends SerializableParam> {
   dangerouslyAllowMutability?: boolean;
   default: RecoilValue<T> | Promise<T> | T | ((param: P) => T | RecoilValue<T> | Promise<T>);
   effects_UNSTABLE?: | ReadonlyArray<AtomEffect<T>> | ((param: P) => ReadonlyArray<AtomEffect<T>>);
+  // cachePolicyForParams_UNSTABLE?: CachePolicyWithoutEviction; TODO: removing while we discuss long term API
 }
 
 export function atomFamily<T, P extends SerializableParam>(
@@ -297,27 +335,29 @@ export function atomFamily<T, P extends SerializableParam>(
 
 export interface ReadOnlySelectorFamilyOptions<T, P extends SerializableParam> {
   key: string;
-  get: (param: P) => (opts: { get: GetRecoilValue }) => Promise<T> | RecoilValue<T> | T;
-  // cacheImplementation_UNSTABLE?: () => CacheImplementation<Loadable<T>>,
-  // cacheImplementationForParams_UNSTABLE?: () => CacheImplementation<
-  //   RecoilValue<T>,
-  // >,
+  get: (param: P) => (opts: {
+    get: GetRecoilValue,
+    getCallback: GetCallback,
+  }) => Promise<T> | RecoilValue<T> | T;
+  // cachePolicyForParams_UNSTABLE?: CachePolicyWithoutEviction; TODO: removing while we discuss long term API
+  cachePolicy_UNSTABLE?: CachePolicyWithoutEquality; // TODO: using the more restrictive CachePolicyWithoutEquality while we discuss long term API
   dangerouslyAllowMutability?: boolean;
 }
 
 export interface ReadWriteSelectorFamilyOptions<T, P extends SerializableParam> {
   key: string;
-  get: (param: P) => (opts: { get: GetRecoilValue }) => Promise<T> | RecoilValue<T> | T;
+  get: (param: P) => (opts: {
+    get: GetRecoilValue,
+    getCallback: GetCallback,
+  }) => Promise<T> | RecoilValue<T> | T;
   set: (
       param: P,
   ) => (
       opts: { set: SetRecoilState; get: GetRecoilValue; reset: ResetRecoilState },
       newValue: T | DefaultValue,
   ) => void;
-  // cacheImplementation_UNSTABLE?: () => CacheImplementation<Loadable<T>>,
-  // cacheImplementationForParams_UNSTABLE?: () => CacheImplementation<
-  //   RecoilValue<T>,
-  // >,
+  // cachePolicyForParams_UNSTABLE?: CachePolicyWithoutEviction; TODO: removing while we discuss long term API
+  cachePolicy_UNSTABLE?: CachePolicyWithoutEquality; // TODO: using the more restrictive CachePolicyWithoutEquality while we discuss long term API
   dangerouslyAllowMutability?: boolean;
 }
 

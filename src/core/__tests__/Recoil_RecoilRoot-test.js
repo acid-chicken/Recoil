@@ -28,7 +28,7 @@ let React,
 const testRecoil = getRecoilTestFn(() => {
   React = require('react');
   ({useState} = require('react'));
-  ReactDOM = require('ReactDOM');
+  ReactDOM = require('ReactDOMLegacy_DEPRECATED');
   ({act} = require('ReactTestUtils'));
 
   ({useSetRecoilState} = require('../../hooks/Recoil_Hooks'));
@@ -50,6 +50,7 @@ describe('initializeState', () => {
       key: 'RecoilRoot - initializeState - atom',
       default: 'DEFAULT',
     });
+    // $FlowFixMe[incompatible-call] added when improving typing for this parameters
     const mySelector = constSelector(myAtom);
 
     function initializeState({set, getLoadable}) {

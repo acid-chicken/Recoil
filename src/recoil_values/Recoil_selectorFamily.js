@@ -10,7 +10,10 @@
  */
 'use strict';
 
-import type {CachePolicy} from '../caches/Recoil_CachePolicy';
+import type {
+  CachePolicy,
+  CachePolicyWithoutEviction,
+} from '../caches/Recoil_CachePolicy';
 import type {DefaultValue} from '../core/Recoil_Node';
 import type {
   RecoilState,
@@ -18,11 +21,12 @@ import type {
   RecoilValueReadOnly,
 } from '../core/Recoil_RecoilValue';
 import type {RetainedBy} from '../core/Recoil_RetainedBy';
+import type {GetCallback} from '../recoil_values/Recoil_selector';
 import type {
   GetRecoilValue,
   ResetRecoilState,
   SetRecoilState,
-} from './Recoil_selector';
+} from './Recoil_callbackTypes';
 
 const cacheFromPolicy = require('../caches/Recoil_cacheFromPolicy');
 const {setConfigDeletionHandler} = require('../core/Recoil_Node');
@@ -41,8 +45,11 @@ export type Parameter =
 
 type ReadOnlySelectorFamilyOptions<T, P: Parameter> = $ReadOnly<{
   key: string,
-  get: P => ({get: GetRecoilValue}) => Promise<T> | RecoilValue<T> | T,
-  cachePolicyForParams_UNSTABLE?: CachePolicy,
+  get: P => ({get: GetRecoilValue, getCallback: GetCallback}) =>
+    | Promise<T>
+    | RecoilValue<T>
+    | T,
+  cachePolicyForParams_UNSTABLE?: CachePolicyWithoutEviction,
   cachePolicy_UNSTABLE?: CachePolicy,
   dangerouslyAllowMutability?: boolean,
   retainedBy_UNSTABLE?: RetainedBy | (P => RetainedBy),
@@ -92,12 +99,10 @@ function selectorFamily<T, Params: Parameter>(
   const selectorCache = cacheFromPolicy<
     Params,
     RecoilState<T> | RecoilValueReadOnly<T>,
-  >(
-    options.cachePolicyForParams_UNSTABLE ?? {
-      equality: 'value',
-      eviction: 'none',
-    },
-  );
+  >({
+    equality: options.cachePolicyForParams_UNSTABLE?.equality ?? 'value',
+    eviction: 'none',
+  });
 
   return (params: Params) => {
     const cachedSelector = selectorCache.get(params);

@@ -11,12 +11,13 @@
 'use strict';
 
 import type {Loadable} from '../adt/Recoil_Loadable';
-import type {DefaultValue} from '../core/Recoil_Node';
-import type {PersistenceType} from '../core/Recoil_Node';
+import type {TransactionInterface} from '../core/Recoil_AtomicUpdates';
+import type {DefaultValue, PersistenceType} from '../core/Recoil_Node';
 import type {RecoilState, RecoilValue} from '../core/Recoil_RecoilValue';
 import type {ComponentSubscription} from '../core/Recoil_RecoilValueInterface';
 import type {NodeKey, Store, TreeState} from '../core/Recoil_State';
 
+const {atomicUpdater} = require('../core/Recoil_AtomicUpdates');
 const {batchUpdates} = require('../core/Recoil_Batching');
 const {DEFAULT_VALUE, getNode, nodes} = require('../core/Recoil_Node');
 const {
@@ -59,7 +60,11 @@ const {useCallback, useEffect, useMemo, useRef, useState} = require('react');
 // to be discarded and their resources released.
 const SUSPENSE_TIMEOUT_MS = 120000;
 
-function handleLoadable<T>(loadable: Loadable<T>, atom, storeRef): T {
+function handleLoadable<T>(
+  loadable: Loadable<T>,
+  recoilValue: RecoilValue<T>,
+  storeRef,
+): T {
   // We can't just throw the promise we are waiting on to Suspense.  If the
   // upstream dependencies change it may produce a state in which the component
   // can render, but it would still be suspended on a Promise that may never resolve.
@@ -69,11 +74,21 @@ function handleLoadable<T>(loadable: Loadable<T>, atom, storeRef): T {
     const promise = new Promise(resolve => {
       storeRef.current.getState().suspendedComponentResolvers.add(resolve);
     });
+
+    // $FlowFixMe Flow(prop-missing) for integrating with tools that inspect thrown promises @fb-only
+    // @fb-only: promise.displayName = `Recoil State: ${recoilValue.key}`;
+
     throw promise;
   } else if (loadable.state === 'hasError') {
     throw loadable.contents;
   } else {
-    throw new Error(`Invalid value of loadable atom "${atom.key}"`);
+    const err = new Error(
+      `Invalid value of loadable atom "${recoilValue.key}"`,
+    );
+
+    err.stack; // In V8, Error objects keep closures alive until the error.stack property is accessed
+
+    throw err;
   }
 }
 
@@ -108,9 +123,9 @@ function useRecoilInterface_DEPRECATED(): RecoilInterface {
   const storeRef = useStoreRef();
   const [_, forceUpdate] = useState([]);
 
-  const recoilValuesUsed = useRef<Set<NodeKey>>(new Set());
+  const recoilValuesUsed = useRef<$ReadOnlySet<NodeKey>>(new Set());
   recoilValuesUsed.current = new Set(); // Track the RecoilValues used just during this render
-  const previousSubscriptions = useRef<Set<NodeKey>>(new Set());
+  const previousSubscriptions = useRef<$ReadOnlySet<NodeKey>>(new Set());
   const subscriptions = useRef<Map<NodeKey, ComponentSubscription>>(new Map());
 
   const unsubscribeFrom = useCallback(
@@ -144,7 +159,6 @@ function useRecoilInterface_DEPRECATED(): RecoilInterface {
         expectationViolation(`Double subscription to RecoilValue "${key}"`);
         return;
       }
-
       const sub = subscribeToRecoilValue(
         store,
         new AbstractRecoilValue(key),
@@ -234,7 +248,14 @@ function useRecoilInterface_DEPRECATED(): RecoilInterface {
         );
       }
       // TODO Restore optimization to memoize lookup
-      return getRecoilValueAsLoadable(storeRef.current, recoilValue);
+      const storeState = storeRef.current.getState();
+      return getRecoilValueAsLoadable(
+        storeRef.current,
+        recoilValue,
+        gkx('recoil_early_rendering_2021')
+          ? storeState.nextTree ?? storeState.currentTree
+          : storeState.currentTree,
+      );
     }
 
     function useRecoilValue<T>(recoilValue: RecoilValue<T>): T {
@@ -294,7 +315,10 @@ function useRecoilValueLoadable_MUTABLESOURCE<T>(
 
   const getLoadable = useCallback(() => {
     const store = storeRef.current;
-    const treeState = store.getState().currentTree;
+    const storeState = store.getState();
+    const treeState = gkx('recoil_early_rendering_2021')
+      ? storeState.nextTree ?? storeState.currentTree
+      : storeState.currentTree;
     return getRecoilValueAsLoadable(store, recoilValue, treeState);
   }, [storeRef, recoilValue]);
   const getLoadableWithTesting = useCallback(() => {
@@ -323,6 +347,12 @@ function useRecoilValueLoadable_MUTABLESOURCE<T>(
           if (!prevLoadableRef.current.is(newLoadable)) {
             callback();
           }
+          // If the component is suspended then the effect setting prevLoadableRef
+          // will not run.  So, set the previous value here when its subscription
+          // is fired to wake it up.  We can't just rely on this, though, because
+          // this only executes when an atom/selector is dirty and the atom/selector
+          // passed to the hook can dynamically change.
+          prevLoadableRef.current = newLoadable;
         },
         componentName,
       );
@@ -370,6 +400,7 @@ function useRecoilValueLoadable_LEGACY<T>(
         if (!prevLoadableRef.current?.is(newLoadable)) {
           forceUpdate(newLoadable);
         }
+        prevLoadableRef.current = newLoadable;
       },
       componentName,
     );
@@ -407,6 +438,7 @@ function useRecoilValueLoadable_LEGACY<T>(
       if (!prevLoadableRef.current?.is(newLoadable)) {
         forceUpdate(newLoadable);
       }
+      prevLoadableRef.current = newLoadable;
     }
 
     return subscription.release;
@@ -589,7 +621,7 @@ function useTransactionObservation_DEPRECATED(
     atomValues: Map<NodeKey, mixed>,
     previousAtomValues: Map<NodeKey, mixed>,
     atomInfo: Map<NodeKey, ExternallyVisibleAtomInfo>,
-    modifiedAtoms: Set<NodeKey>,
+    modifiedAtoms: $ReadOnlySet<NodeKey>,
     transactionMetadata: {[NodeKey]: mixed, ...},
   }) => void,
 ) {
@@ -687,12 +719,12 @@ function useRecoilSnapshot(): Snapshot {
 
   if (previousSnapshot !== snapshot && !isSSR) {
     if (timeoutID.current) {
-      previousSnapshot?.release();
+      previousSnapshot?.release_INTERNAL();
       window.clearTimeout(timeoutID.current);
     }
     snapshot.retain();
     timeoutID.current = window.setTimeout(() => {
-      snapshot.release();
+      snapshot.release_INTERNAL();
       timeoutID.current = null;
     }, SUSPENSE_TIMEOUT_MS);
   }
@@ -760,18 +792,19 @@ function useSetUnvalidatedAtomValues(): (
   };
 }
 
-type CallbackInterface = $ReadOnly<{
+export type RecoilCallbackInterface = $ReadOnly<{
   set: <T>(RecoilState<T>, (T => T) | T) => void,
   reset: <T>(RecoilState<T>) => void,
   snapshot: Snapshot,
   gotoSnapshot: Snapshot => void,
+  transact_UNSTABLE: ((TransactionInterface) => void) => void,
 }>;
 
 class Sentinel {}
 const SENTINEL = new Sentinel();
 
 function useRecoilCallback<Args: $ReadOnlyArray<mixed>, Return>(
-  fn: CallbackInterface => (...Args) => Return,
+  fn: RecoilCallbackInterface => (...Args) => Return,
   deps?: $ReadOnlyArray<mixed>,
 ): (...Args) => Return {
   const storeRef = useStoreRef();
@@ -791,7 +824,10 @@ function useRecoilCallback<Args: $ReadOnlyArray<mixed>, Return>(
       }
 
       // Use currentTree for the snapshot to show the currently committed state
-      const snapshot = cloneSnapshot(storeRef.current);
+      const snapshot = cloneSnapshot(storeRef.current); // FIXME massive gains from doing this lazily
+
+      const atomicUpdate = atomicUpdater(storeRef.current);
+
       let ret = SENTINEL;
       batchUpdates(() => {
         const errMsg =
@@ -805,7 +841,13 @@ function useRecoilCallback<Args: $ReadOnlyArray<mixed>, Return>(
           throw new Error(errMsg);
         }
         // flowlint-next-line unclear-type:off
-        const cb = (fn: any)({set, reset, snapshot, gotoSnapshot});
+        const cb = (fn: any)({
+          set,
+          reset,
+          snapshot,
+          gotoSnapshot,
+          transact_UNSTABLE: atomicUpdate,
+        });
         if (typeof cb !== 'function') {
           throw new Error(errMsg);
         }
@@ -852,11 +894,6 @@ function useRetain_ACTUAL(toRetain: ToRetain): void {
       window.clearTimeout(timeoutID.current);
       timeoutID.current = null;
     } else {
-      // Log this since it's not clear that there's any scenario where it should happen.
-      recoverableViolation(
-        'Did not retain recoil value on render, or committed after timeout elapsed. This is fine, but odd.',
-        'recoil',
-      );
       for (const r of retainables) {
         updateRetainCount(store, r, 1);
       }
@@ -901,6 +938,22 @@ function useRetain_ACTUAL(toRetain: ToRetain): void {
   }
 }
 
+function useRecoilTransaction<Arguments: $ReadOnlyArray<mixed>>(
+  fn: TransactionInterface => (...Arguments) => void,
+  deps?: $ReadOnlyArray<mixed>,
+): (...Arguments) => void {
+  const storeRef = useStoreRef();
+  return useMemo(
+    () => (...args: Arguments): void => {
+      const atomicUpdate = atomicUpdater(storeRef.current);
+      atomicUpdate(transactionInterface => {
+        fn(transactionInterface)(...args);
+      });
+    },
+    deps != null ? [...deps, storeRef] : undefined, // eslint-disable-line fb-www/react-hooks-deps
+  );
+}
+
 module.exports = {
   recoilComponentGetRecoilValueCount_FOR_TESTING,
   useGotoRecoilSnapshot,
@@ -909,6 +962,7 @@ module.exports = {
   useRecoilSnapshot,
   useRecoilState,
   useRecoilStateLoadable,
+  useRecoilTransaction,
   useRecoilTransactionObserver,
   useRecoilValue,
   useRecoilValueLoadable,

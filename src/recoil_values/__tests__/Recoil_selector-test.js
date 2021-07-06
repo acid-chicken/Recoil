@@ -10,6 +10,9 @@
  */
 'use strict';
 
+import type {Loadable} from '../../adt/Recoil_Loadable';
+import type {RecoilValue} from '../../core/Recoil_RecoilValue';
+
 const {getRecoilTestFn} = require('../../testing/Recoil_TestingUtils');
 
 let React,
@@ -36,6 +39,7 @@ let React,
   ReadsAtom,
   renderElements,
   resolvingAsyncSelector,
+  loadingAsyncSelector,
   flushPromisesAndTimers,
   DefaultValue,
   mutableSourceExists,
@@ -70,6 +74,7 @@ const testRecoil = getRecoilTestFn(() => {
     ReadsAtom,
     renderElements,
     resolvingAsyncSelector,
+    loadingAsyncSelector,
     flushPromisesAndTimers,
   } = require('../../testing/Recoil_TestingUtils'));
   ({noWait} = require('../Recoil_WaitFor'));
@@ -79,12 +84,12 @@ const testRecoil = getRecoilTestFn(() => {
   store = makeStore();
 });
 
-function getLoadable(recoilValue) {
+function getLoadable<T>(recoilValue: RecoilValue<T>): Loadable<T> {
   return getRecoilValueAsLoadable(store, recoilValue);
 }
 
-function get(recoilValue) {
-  return getLoadable(recoilValue).contents;
+function get<T>(recoilValue: RecoilValue<T>): T {
+  return (getLoadable(recoilValue).contents: any); // flowlint-line unclear-type:off
 }
 
 function getError(recoilValue): Error {
@@ -645,6 +650,39 @@ testRecoil(
   },
 );
 
+testRecoil('Selector getCallback', async () => {
+  const myAtom = atom({
+    key: 'selector - getCallback atom',
+    default: 'DEFAULT',
+  });
+  const mySelector = selector({
+    key: 'selector - getCallback',
+    get: ({getCallback}) => {
+      return {
+        onClick: getCallback(({snapshot}) => async () =>
+          await snapshot.getPromise(myAtom),
+        ),
+      };
+    },
+  });
+
+  const menuItem = get(mySelector);
+  await expect(menuItem.onClick()).resolves.toEqual('DEFAULT');
+  act(() => set(myAtom, 'SET'));
+  await expect(menuItem.onClick()).resolves.toEqual('SET');
+});
+
+testRecoil("Selector can't call getCallback during evaluation", () => {
+  const mySelector = selector({
+    key: 'selector - getCallback throws',
+    get: ({getCallback}) => {
+      const callback = getCallback(() => () => {});
+      callback();
+    },
+  });
+  getError(mySelector);
+});
+
 testRecoil("Updating with same value doesn't rerender", gks => {
   if (!gks.includes('recoil_suppress_rerender_in_callback')) {
     return;
@@ -772,6 +810,34 @@ testRecoil('Updating with changed selector', gks => {
   // When we swap back to atomA it now has the same value as atomB.
   act(() => setSide('A'));
   expect(c.textContent).toEqual('FOO');
+});
+
+testRecoil('Change component prop to suspend and wake', () => {
+  const awakeSelector = constSelector('WAKE');
+  const suspendedSelector = loadingAsyncSelector();
+
+  function TestComponent({side}) {
+    return (
+      useRecoilValue(side === 'AWAKE' ? awakeSelector : suspendedSelector) ??
+      'LOADING'
+    );
+  }
+
+  let setSide;
+  const SelectorComponent = function () {
+    const [side, setSideState] = useState('AWAKE');
+    setSide = setSideState;
+    return <TestComponent side={side} />;
+  };
+  const c = renderElements(<SelectorComponent />);
+
+  expect(c.textContent).toEqual('WAKE');
+
+  act(() => setSide('SLEEP'));
+  expect(c.textContent).toEqual('loading');
+
+  act(() => setSide('AWAKE'));
+  expect(c.textContent).toEqual('WAKE');
 });
 
 /**
@@ -1248,7 +1314,7 @@ testRecoil(
 
     await flushPromisesAndTimers();
 
-    const val = await promise;
+    const val: mixed = await promise;
 
     expect(val).toBe('RESOLVED');
   },
@@ -1301,7 +1367,7 @@ testRecoil(
 
     await flushPromisesAndTimers();
 
-    const val = await promise;
+    const val: mixed = await promise;
 
     expect(val).toBe('AB');
   },
@@ -1363,3 +1429,101 @@ testRecoil('selectors cannot mutate values in get() or set()', () => {
 
   window.__DEV__ = devStatus;
 });
+
+testRecoil(
+  'selector does not re-run to completion when one of its async deps resolves to a previously cached value',
+  async () => {
+    const testSnapshot = freshSnapshot();
+    testSnapshot.retain();
+
+    const atomA = atom({
+      key: 'atomc-rerun-opt-test',
+      default: -3,
+    });
+
+    const selectorB = selector({
+      key: 'selb-rerun-opt-test',
+      get: async ({get}) => {
+        await Promise.resolve();
+
+        return Math.abs(get(atomA));
+      },
+    });
+
+    let numTimesCStartedToRun = 0;
+    let numTimesCRanToCompletion = 0;
+
+    const selectorC = selector({
+      key: 'sela-rerun-opt-test',
+      get: ({get}) => {
+        numTimesCStartedToRun++;
+
+        const ret = get(selectorB);
+
+        /**
+         * The placement of numTimesCRan is important as this optimization
+         * prevents the execution of selectorC _after_ the point where the
+         * selector execution hits a known path of dependencies. In other words,
+         * the lines prior to the get(selectorB) will run twice, but the lines
+         * following get(selectorB) should only run once given that we are
+         * setting up this test so that selectorB resolves to a previously seen
+         * value the second time that it runs.
+         */
+        numTimesCRanToCompletion++;
+
+        return ret;
+      },
+    });
+
+    testSnapshot.getLoadable(selectorC);
+
+    /**
+     * Run selector chain so that selectorC is cached with a dep of selectorB
+     * set to "3"
+     */
+    await flushPromisesAndTimers();
+
+    const loadableA = testSnapshot.getLoadable(selectorC);
+
+    expect(loadableA.contents).toBe(3);
+    expect(numTimesCRanToCompletion).toBe(1);
+
+    /**
+     * It's expected that C started to run twice so far (the first is the first
+     * time that the selector was called and suspended, the second was when B
+     * resolved and C re-ran because of the async dep resolution)
+     */
+    expect(numTimesCStartedToRun).toBe(2);
+
+    const mappedSnapshot = testSnapshot.map(({set}) => {
+      set(atomA, 3);
+    });
+
+    mappedSnapshot.getLoadable(selectorC);
+
+    /**
+     * Run selector chain so that selectorB recalculates as a result of atomA
+     * being changed to "3"
+     */
+    await flushPromisesAndTimers();
+
+    const loadableB = mappedSnapshot.getLoadable(selectorC);
+
+    expect(loadableB.contents).toBe(3);
+
+    /**
+     * If selectors are correctly optimized, selectorC will not re-run because
+     * selectorB resolved to "3", which is a value that selectorC has previously
+     * cached for its selectorB dependency.
+     */
+    expect(numTimesCRanToCompletion).toBe(1);
+
+    /**
+     * TODO:
+     * in the ideal case this should be:
+     *
+     * expect(numTimesCStartedToRun).toBe(2);
+     */
+    expect(numTimesCStartedToRun).toBe(3);
+  },
+);

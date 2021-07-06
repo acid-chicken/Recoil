@@ -21,18 +21,22 @@ export type {
   Snapshot,
   SnapshotID,
 } from './core/Recoil_Snapshot';
-export type {SetterOrUpdater} from './hooks/Recoil_Hooks';
+export type {
+  RecoilCallbackInterface,
+  SetterOrUpdater,
+} from './hooks/Recoil_Hooks';
 export type {RecoilBridge} from './hooks/Recoil_useRecoilBridgeAcrossReactRoots';
 export type {Loadable} from './adt/Recoil_Loadable';
 export type {
   AtomEffect,
   PersistenceSettings,
 } from './recoil_values/Recoil_atom';
+export type {TransactionInterface} from './core/Recoil_AtomicUpdates';
 export type {
   GetRecoilValue,
   SetRecoilState,
   ResetRecoilState,
-} from './recoil_values/Recoil_selector';
+} from './recoil_values/Recoil_callbackTypes';
 export type {
   Parameter,
   SelectorFamilyOptions,
@@ -50,6 +54,7 @@ const {
   useRecoilSnapshot,
   useRecoilState,
   useRecoilStateLoadable,
+  useRecoilTransaction,
   useRecoilTransactionObserver,
   useRecoilValue,
   useRecoilValueLoadable,
@@ -108,8 +113,9 @@ module.exports = {
   useGetRecoilValueInfo_UNSTABLE: useGetRecoilValueInfo,
   useRetain,
 
-  // Hooks for asynchronous Recoil
+  // Hooks for complex operations with RecoilValues
   useRecoilCallback,
+  useRecoilTransaction_UNSTABLE: useRecoilTransaction,
 
   // Hooks for Snapshots
   useGotoRecoilSnapshot,

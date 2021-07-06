@@ -10,16 +10,21 @@
  */
 'use strict';
 
-import type {RecoilValueReadOnly} from '../core/Recoil_RecoilValue';
-import type {RecoilState, RecoilValue} from '../core/Recoil_RecoilValue';
+import type {
+  RecoilState,
+  RecoilValue,
+  RecoilValueReadOnly,
+} from '../core/Recoil_RecoilValue';
 import type {Store} from '../core/Recoil_State';
 
-const ReactDOM = require('ReactDOM');
+// @fb-only: const ReactDOMComet = require('ReactDOMComet');
+const ReactDOM = require('ReactDOMLegacy_DEPRECATED');
 const {act} = require('ReactTestUtils');
 
 const {graph} = require('../core/Recoil_Graph');
 const {
   RecoilRoot,
+  notifyComponents_FOR_TESTING,
   sendEndOfBatchNotifications_FOR_TESTING,
 } = require('../core/Recoil_RecoilRoot.react');
 const {
@@ -38,6 +43,11 @@ const stableStringify = require('../util/Recoil_stableStringify');
 const React = require('react');
 const {useEffect} = require('react');
 
+const ReactDOMComet = require('ReactDOMLegacy_DEPRECATED'); // @oss-only
+
+// @fb-only: const IS_INTERNAL = true;
+const IS_INTERNAL = false; // @oss-only
+
 // TODO Use Snapshot for testing instead of this thunk?
 function makeStore(): Store {
   const storeState = makeEmptyStoreState();
@@ -48,6 +58,10 @@ function makeStore(): Store {
       // FIXME: does not increment state version number
       storeState.currentTree = replacer(storeState.currentTree); // no batching so nextTree is never active
       invalidateDownstreams_FOR_TESTING(store, storeState.currentTree);
+      const gkx = require('../util/Recoil_gkx');
+      if (gkx('recoil_early_rendering_2021')) {
+        notifyComponents_FOR_TESTING(store, storeState, storeState.currentTree);
+      }
       sendEndOfBatchNotifications_FOR_TESTING(store);
     },
     getGraph: version => {
@@ -60,7 +74,9 @@ function makeStore(): Store {
       return newGraph;
     },
     subscribeToTransactions: () => {
-      throw new Error('not tested at this level');
+      throw new Error(
+        'This functionality, should not tested at this level. Use a component to test this functionality: e.g. componentThatReadsAndWritesAtom',
+      );
     },
     addTransactionMetadata: () => {
       throw new Error('not implemented');
@@ -84,13 +100,19 @@ class ErrorBoundary extends React.Component<
   }
 }
 
-function createReactRoot(container, contents) {
-  // To test in Concurrent Mode replace with:
-  // ReactDOM.createRoot(container).render(contents);
+function createLegacyReactRoot(container, contents) {
   ReactDOM.render(contents, container);
 }
 
-function renderElements(elements: ?React.Node): HTMLDivElement {
+function createConcurrentReactRoot(container, contents) {
+  // @fb-only: ReactDOMComet.createRoot(container).render(contents);
+  // @oss-only ReactDOMComet.unstable_createRoot(container).render(contents);
+}
+
+function renderElementsInternal(
+  elements: ?React.Node,
+  createReactRoot,
+): HTMLDivElement {
   const container = document.createElement('div');
   act(() => {
     createReactRoot(
@@ -105,6 +127,14 @@ function renderElements(elements: ?React.Node): HTMLDivElement {
   return container;
 }
 
+function renderElements(elements: ?React.Node): HTMLDivElement {
+  return renderElementsInternal(elements, createLegacyReactRoot);
+}
+
+function renderElementsInConcurrentRoot(elements: ?React.Node): HTMLDivElement {
+  return renderElementsInternal(elements, createConcurrentReactRoot);
+}
+
 function renderElementsWithSuspenseCount(
   elements: ?React.Node,
 ): [HTMLDivElement, JestMockFn<[], void>] {
@@ -115,7 +145,7 @@ function renderElementsWithSuspenseCount(
     return 'loading';
   }
   act(() => {
-    createReactRoot(
+    createLegacyReactRoot(
       container,
       <RecoilRoot>
         <ErrorBoundary>
@@ -157,7 +187,7 @@ const resolvingAsyncSelector: <T>(T) => RecoilValue<T> = <T>(
     get: () => Promise.resolve(value),
   });
 
-const loadingAsyncSelector: () => RecoilValue<void> = () =>
+const loadingAsyncSelector: () => RecoilValueReadOnly<void> = () =>
   selector({
     key: `LoadingSelector${id++}`,
     get: () => new Promise(() => {}),
@@ -263,9 +293,20 @@ const testGKs = (
 };
 
 const WWW_GKS_TO_TEST = [
+  [],
+  ['recoil_early_rendering_2021'],
   ['recoil_suppress_rerender_in_callback'],
+  ['recoil_early_rendering_2021', 'recoil_suppress_rerender_in_callback'],
   ['recoil_hamt_2020'],
-  ['recoil_memory_managament_2020'],
+  [
+    'recoil_memory_managament_2020',
+    'recoil_release_on_cascading_update_killswitch_2021',
+  ],
+  [
+    'recoil_hamt_2020',
+    'recoil_memory_managament_2020',
+    'recoil_release_on_cascading_update_killswitch_2021',
+  ],
 ];
 
 /**
@@ -293,6 +334,7 @@ module.exports = {
   makeStore,
   renderElements,
   renderElementsWithSuspenseCount,
+  renderElementsInConcurrentRoot,
   ReadsAtom,
   componentThatReadsAndWritesAtom,
   errorThrowingAsyncSelector,
@@ -301,4 +343,5 @@ module.exports = {
   asyncSelector,
   flushPromisesAndTimers,
   getRecoilTestFn,
+  IS_INTERNAL,
 };

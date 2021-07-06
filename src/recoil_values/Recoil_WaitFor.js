@@ -137,6 +137,7 @@ const waitForNone: <
 ) => RecoilValueReadOnly<
   $ReadOnlyArray<Loadable<mixed>> | $ReadOnly<{[string]: Loadable<mixed>, ...}>,
   // $FlowFixMe[incompatible-type-arg]
+  // $FlowFixMe[incompatible-type] added when improving typing for this parameters
 > = selectorFamily({
   key: '__waitForNone',
   get: (
@@ -147,10 +148,10 @@ const waitForNone: <
     // Issue requests for all dependencies in parallel.
     const deps = unwrapDependencies(dependencies);
     const [results, exceptions] = concurrentRequests(get, deps);
-
     // Always return the current status of the results; never block.
     return wrapLoadables(dependencies, results, exceptions);
   },
+  dangerouslyAllowMutability: true,
 });
 
 // Selector that requests all dependencies in parallel and waits for at least
@@ -164,6 +165,7 @@ const waitForAny: <
   RecoilValues,
 ) => RecoilValueReadOnly<
   $ReadOnlyArray<mixed> | $ReadOnly<{[string]: mixed, ...}>,
+  // $FlowFixMe[incompatible-type] added when improving typing for this parameters
 > = selectorFamily({
   key: '__waitForAny',
   get: (
@@ -201,6 +203,7 @@ const waitForAny: <
       }
     });
   },
+  dangerouslyAllowMutability: true,
 });
 
 // Selector that requests all dependencies in parallel and waits for all to be
@@ -213,6 +216,7 @@ const waitForAll: <
   RecoilValues,
 ) => RecoilValueReadOnly<
   $ReadOnlyArray<mixed> | $ReadOnly<{[string]: mixed, ...}>,
+  // $FlowFixMe[incompatible-type] added when improving typing for this parameters
 > = selectorFamily({
   key: '__waitForAll',
   get: (
@@ -246,6 +250,7 @@ const waitForAll: <
       ),
     );
   },
+  dangerouslyAllowMutability: true,
 });
 
 const waitForAllSettled: <
@@ -256,6 +261,7 @@ const waitForAllSettled: <
   RecoilValues,
 ) => RecoilValueReadOnly<
   $ReadOnlyArray<mixed> | $ReadOnly<{[string]: mixed, ...}>,
+  // $FlowFixMe[incompatible-type] added when improving typing for this parameters
 > = selectorFamily({
   key: '__waitForAllSettled',
   get: (
@@ -294,10 +300,12 @@ const waitForAllSettled: <
         .then(() => wrapLoadables(dependencies, results, exceptions))
     );
   },
+  dangerouslyAllowMutability: true,
 });
 
 const noWait: (
   RecoilValue<mixed>,
+  // $FlowFixMe[incompatible-type] added when improving typing for this parameters
 ) => RecoilValueReadOnly<Loadable<mixed>> = selectorFamily({
   key: '__noWait',
   get: dependency => ({get}) => {
@@ -309,6 +317,7 @@ const noWait: (
         : loadableWithError(exception);
     }
   },
+  dangerouslyAllowMutability: true,
 });
 
 module.exports = {

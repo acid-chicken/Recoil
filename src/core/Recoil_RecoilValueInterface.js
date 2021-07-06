@@ -11,7 +11,7 @@
 'use strict';
 
 import type {Loadable} from '../adt/Recoil_Loadable';
-import type {ValueOrUpdater} from '../recoil_values/Recoil_selector';
+import type {ValueOrUpdater} from '../recoil_values/Recoil_callbackTypes';
 import type {
   AtomValues,
   AtomWrites,
@@ -20,6 +20,8 @@ import type {
   TreeState,
 } from './Recoil_State';
 
+const {CANCELED} = require('../adt/Recoil_Loadable');
+const gkx = require('../util/Recoil_gkx');
 const nullthrows = require('../util/Recoil_nullthrows');
 const recoverableViolation = require('../util/Recoil_recoverableViolation');
 const {
@@ -55,6 +57,16 @@ function getRecoilValueAsLoadable<T>(
   }
 
   const loadable = getNodeLoadable(store, treeState, key);
+
+  if (loadable.state === 'loading') {
+    loadable.contents.catch(() => {
+      /**
+       * HACK: intercept thrown error here to prevent an uncaught promise exception. Ideally this would happen closer to selector
+       * execution (perhaps introducing a new ERROR class to be resolved by async selectors that are in an error state)
+       */
+      return CANCELED;
+    });
+  }
 
   return loadable;
 }
@@ -215,7 +227,7 @@ function batchStart(): () => void {
   };
 }
 
-function copyTreeState(state) {
+function copyTreeState(state: TreeState): TreeState {
   return {
     ...state,
     atomValues: state.atomValues.clone(),
@@ -300,6 +312,15 @@ function subscribeToRecoilValue<T>(
     callback,
   ]);
 
+  // Handle the case that, during the same tick that we are subscribing, an atom
+  // has been updated by some effect handler. Otherwise we will miss the update.
+  if (gkx('recoil_early_rendering_2021')) {
+    const nextTree = store.getState().nextTree;
+    if (nextTree && nextTree.dirtyAtoms.has(key)) {
+      callback(nextTree);
+    }
+  }
+
   return {
     release: () => {
       const storeState = store.getState();
@@ -332,5 +353,8 @@ module.exports = {
   isRecoilValue,
   applyAtomValueWrites, // TODO Remove export when deprecating initialStoreState_DEPRECATED in RecoilRoot
   batchStart,
+  writeLoadableToTreeState,
+  invalidateDownstreams,
+  copyTreeState,
   invalidateDownstreams_FOR_TESTING: invalidateDownstreams,
 };

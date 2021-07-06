@@ -66,7 +66,13 @@ import type {
   RecoilValueReadOnly,
 } from '../core/Recoil_RecoilValue';
 import type {RetainedBy} from '../core/Recoil_RetainedBy';
+import type {Snapshot} from '../core/Recoil_Snapshot';
 import type {AtomWrites, NodeKey, Store, TreeState} from '../core/Recoil_State';
+import type {
+  GetRecoilValue,
+  ResetRecoilState,
+  SetRecoilState,
+} from './Recoil_callbackTypes';
 
 const {
   CANCELED,
@@ -92,6 +98,7 @@ const {isRecoilValue} = require('../core/Recoil_RecoilValue');
 const {AbstractRecoilValue} = require('../core/Recoil_RecoilValue');
 const {setRecoilValueLoadable} = require('../core/Recoil_RecoilValueInterface');
 const {retainedByOptionWithDefault} = require('../core/Recoil_Retention');
+const {cloneSnapshot} = require('../core/Recoil_Snapshot');
 const deepFreezeValue = require('../util/Recoil_deepFreezeValue');
 const gkx = require('../util/Recoil_gkx');
 const invariant = require('../util/Recoil_invariant');
@@ -100,21 +107,21 @@ const nullthrows = require('../util/Recoil_nullthrows');
 const {startPerfBlock} = require('../util/Recoil_PerformanceTimings');
 const recoverableViolation = require('../util/Recoil_recoverableViolation');
 
-export type ValueOrUpdater<T> =
-  | T
-  | DefaultValue
-  | ((prevValue: T) => T | DefaultValue);
-export type GetRecoilValue = <T>(RecoilValue<T>) => T;
-export type SetRecoilState = <T>(RecoilState<T>, ValueOrUpdater<T>) => void;
-export type ResetRecoilState = <T>(RecoilState<T>) => void;
+export type GetCallback = <Args: $ReadOnlyArray<mixed>, Return>(
+  fn: ($ReadOnly<{snapshot: Snapshot}>) => (...Args) => Return,
+) => (...Args) => Return;
 
 type ReadOnlySelectorOptions<T> = $ReadOnly<{
   key: string,
-  get: ({get: GetRecoilValue}) => Promise<T> | RecoilValue<T> | T,
+  get: ({get: GetRecoilValue, getCallback: GetCallback}) =>
+    | Promise<T>
+    | RecoilValue<T>
+    | T,
+
+  dangerouslyAllowMutability?: boolean,
 
   retainedBy_UNSTABLE?: RetainedBy,
   cachePolicy_UNSTABLE?: CachePolicy,
-  dangerouslyAllowMutability?: boolean,
 }>;
 
 type ReadWriteSelectorOptions<T> = $ReadOnly<{
@@ -452,6 +459,34 @@ function selector<T>(
           bypassSelectorDepCacheOnReevaluation = false;
         }
 
+        /**
+         * Optimization: Now that the dependency has resolved, let's try hitting
+         * the cache in case the dep resolved to a value we have previously seen.
+         *
+         * TODO:
+         * Note this optimization is not perfect because it only prevents re-executions
+         * _after_ the point where an async dependency is found. Any code leading
+         * up to the async dependency may have run unnecessarily. The ideal case
+         * would be to wait for the async dependency to resolve first, check the
+         * cache, and prevent _any_ execution of the selector if the resulting
+         * value of the dependency leads to a path that is found in the cache.
+         * The ideal case is more difficult to implement as it would require that
+         * we capture and wait for the the async dependency right after checking
+         * the cache. The current approach takes advantage of the fact that running
+         * the selector already has a code path that lets use exit early when
+         * an async dep resolves.
+         */
+        const cachedLoadable = getValFromCacheAndUpdatedDownstreamDeps(
+          store,
+          state,
+        );
+
+        if (cachedLoadable && cachedLoadable.state === 'hasValue') {
+          setExecutionInfo(cachedLoadable, store);
+
+          return {__value: cachedLoadable.contents, __key: key};
+        }
+
         const [loadable, depValues] = evaluateSelectorGetter(
           store,
           state,
@@ -599,14 +634,35 @@ function selector<T>(
       throw depLoadable.contents;
     }
 
+    let gateCallback = false;
+    const getCallback: GetCallback = <Args: $ReadOnlyArray<mixed>, Return>(
+      fn: ($ReadOnly<{snapshot: Snapshot}>) => (...Args) => Return,
+    ): ((...Args) => Return) => {
+      return (...args) => {
+        if (!gateCallback) {
+          throw new Error(
+            'getCallback() should only be called asynchronously after the selector is evalutated.  It can be used for selectors to return objects with callbacks that can obtain the current Recoil state without a subscription.',
+          );
+        }
+        const snapshot = cloneSnapshot(store);
+        const cb = fn({snapshot});
+        if (typeof cb !== 'function') {
+          throw new Error(
+            'getCallback() expects a function that returns a function.',
+          );
+        }
+        return cb(...args);
+      };
+    };
+
     try {
-      result = get({get: getRecoilValue});
+      result = get({get: getRecoilValue, getCallback});
       result = isRecoilValue(result) ? getRecoilValue(result) : result;
+      gateCallback = true;
 
       if (isPromise(result)) {
         result = wrapPendingPromise(
           store,
-          // $FlowFixMe[incompatible-call]
           result,
           state,
           depValues,
@@ -621,7 +677,6 @@ function selector<T>(
       if (isPromise(result)) {
         result = wrapPendingDependencyPromise(
           store,
-          // $FlowFixMe[incompatible-call]
           result,
           state,
           depValues,
@@ -636,10 +691,8 @@ function selector<T>(
     if (resultIsError) {
       loadable = loadableWithError(result);
     } else if (isPromise(result)) {
-      // $FlowFixMe[incompatible-call]
       loadable = loadableWithPromise<T>(result);
     } else {
-      // $FlowFixMe[incompatible-call]
       loadable = loadableWithValue<T>(result);
     }
 
@@ -1077,6 +1130,7 @@ function selector<T>(
 
     return registerNode<T>({
       key,
+      nodeType: 'selector',
       peek: selectorPeek,
       get: selectorGet,
       set: selectorSet,
@@ -1090,6 +1144,7 @@ function selector<T>(
   } else {
     return registerNode<T>({
       key,
+      nodeType: 'selector',
       peek: selectorPeek,
       get: selectorGet,
       init: selectorInit,

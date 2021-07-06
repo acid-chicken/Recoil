@@ -1,18 +1,44 @@
 # Change Log
 
-## LATER
+## UPCOMING
+
+* Add new changes here as they land*
 
 - Performance optimization to suppress re-rendering components:
-    - When subscribed selectors evaluate to the same value. (#749)
+    - When subscribed selectors evaluate to the same value. (#749, #952)
     - On initial render when not using React Concurrent Mode (#820)
 - Memory management
-- Selector cache configuration
+- Selector cache configuration: introduced `cachePolicy_UNSTABLE` option for selectors and selector families. This option allows you to control the behavior of how the selector evicts entries from its internal cache. Initially the only eviction option is LRU (least recently used caching). For example, setting this option to: `{eviction: 'lru', maxSize: 5}` will ensure the selector only retains 5 entries for its cache of dependencies, and will evict additional entries based on the least recently used entry.
 
 ## NEXT
 
-- (Add new changes here as they land)
-- Improved TypeScript and Flow typing for `Loadable`s (#966)
-- Added override prop to RecoilRoot
+- Fix TypeScript typeing for `selectorFamily()` and `getCallback()` (#1060)
+- Fix onSet() handler to get the proper new value when atom is reset or has an async default Promise that resolves (#1059, #1050, #738) (Slightly breaking change)
+- useRecoilTransaction_UNSTABLE
+- useTransition compatibility
+- Re-renders from Recoil updates now occur 1) earlier, 2) in sync with React updates in the same batch, and 3) before transaction observers instead of after.
+
+## 0.3.1 (2021-5-18)
+
+- Fix TypeScript exports
+
+## 0.3.0 (2021-5-14)
+
+For supporting garbage collection in the future there is a slight breaking change that `Snapshot`'s will only be valid for the duration of the callback or render.   A new `retain()` API can be used to persist them longer.  This is not enforced yet, but Recoil will now provide a warning in dev-mode if a `Snapshot` is used past its lifetime. (#1006)
+
+### New Features / Improvements
+- Add `override` prop to `<RecoilRoot>` (#973)
+- Add `getCallback()` to selector evaluation interface (#989)
+- Improved TypeScript and Flow typing for `Loadable`s (#966, #1022)
+
+### Performance Optimizations
+- Improve scalability (time and memory) of Atom families by cleaning up a legacy feature.
+
+### Bug Fixes
+- Throwing an error in an async selector should be properly caught by `<ErrorBoundary>`'s (#998, #1017)
+- Fix for Atom Effects `onSet()` should not be called when triggered from `setSelf()` initializing with a Promise or from the same `onSet()` handler.  (#974, #979, #953, #986)
+- Improved support for Safari (#967, #609)
+- Objects stored in selectors are properly frozen in dev mode (#911)
 
 ## 0.2.0 (2021-3-18)
 
@@ -26,7 +52,7 @@
 - Changed semantics of waitForAny() such that it will always return loadables unless everything is loading. This better aligns behaviour of waitForAny() and waitForNone()
 - Added a waitForAllSettled helper analogous to Promise.allSettled. (4c95591)
 - Friendly error message for misuse of useRecoilCallback (#870)
-- Friendly error message if you try to use an async function as a selector setter, which is not uspported. (#777)
+- Friendly error message if you try to use an async function as a selector setter, which is not supported. (#777)
 - Improved React Native support. (#748, #702)
 - Added useGetRecoilValueInfo_UNSTABLE() hook for dev tools. (#713, #714)
 

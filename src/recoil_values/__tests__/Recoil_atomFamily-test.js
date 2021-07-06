@@ -43,7 +43,7 @@ const testRecoil = getRecoilTestFn(() => {
 
   React = require('react');
   ({Profiler, useState} = require('react'));
-  ReactDOM = require('ReactDOM');
+  ReactDOM = require('ReactDOMLegacy_DEPRECATED');
   ({act} = require('ReactTestUtils'));
 
   ({RecoilRoot} = require('../../core/Recoil_RecoilRoot.react'));
@@ -109,19 +109,6 @@ testRecoil('Works with non-overlapping sets', () => {
   expect(get(pAtom({y: 'y'}))).toBe('yValue');
 });
 
-testRecoil('Upgrades non-parameterized atoms', () => {
-  let upgrade = atom({
-    key: 'upgrade',
-    default: 'default',
-  });
-  set(upgrade, '123');
-  upgrade = atomFamily({
-    key: 'upgrade', // Intentially same key as above
-    default: 'default',
-  });
-  expect(get(upgrade({x: 'x'}))).toBe('123');
-});
-
 testRecoil('Works with atom default', () => {
   const fallbackAtom = atom({key: 'fallback', default: 0});
   const hasFallback = atomFamily({
@@ -153,10 +140,15 @@ testRecoil('Works with date as parameter', () => {
     key: 'dateFamily',
     default: date => 0,
   });
+  // $FlowFixMe[incompatible-call] added when improving typing for this parameters
   expect(get(dateAtomFamily(new Date(2021, 2, 25)))).toBe(0);
+  // $FlowFixMe[incompatible-call] added when improving typing for this parameters
   expect(get(dateAtomFamily(new Date(2021, 2, 26)))).toBe(0);
+  // $FlowFixMe[incompatible-call] added when improving typing for this parameters
   set(dateAtomFamily(new Date(2021, 2, 25)), 1);
+  // $FlowFixMe[incompatible-call] added when improving typing for this parameters
   expect(get(dateAtomFamily(new Date(2021, 2, 25)))).toBe(1);
+  // $FlowFixMe[incompatible-call] added when improving typing for this parameters
   expect(get(dateAtomFamily(new Date(2021, 2, 26)))).toBe(0);
 });
 
